@@ -1,0 +1,75 @@
+.latex-copy-hover {
+  cursor: default !important;
+  background-color: rgba(100, 116, 139, 0.06) !important;
+  outline: 1px solid rgba(100, 116, 139, 0.22) !important;
+  outline-offset: 2px !important;
+  border-radius: 4px !important;
+  -webkit-box-decoration-break: clone !important;
+  box-decoration-break: clone !important;
+}
+.latex-copy-hover * { cursor: default !important; }
+.latex-copy-toast {
+  all: initial;
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  pointer-events: none !important;
+  transform: translate(-50%, -100%) !important;
+}
+.latex-copy-editor {
+  all: initial;
+  position: fixed !important;
+  z-index: 2147483646 !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  width: min(390px, calc(100% - 24px)) !important;
+  max-width: calc(100% - 24px) !important;
+  max-height: calc(100% - 24px) !important;
+  overflow: visible !important;
+  margin: 0 !important;
+  line-height: normal !important;
+  text-align: left !important;
+}
+.latex-copy-editor[data-display="true"] {
+  width: min(560px, calc(100% - 24px)) !important;
+}
+.latex-copy-editor[data-out-of-view] { visibility: hidden !important; pointer-events: none !important; }
+.latex-copy-editing {
+  background-color: rgba(100, 116, 139, 0.06) !important;
+  outline: 1px solid rgba(100, 116, 139, 0.22) !important;
+  outline-offset: 2px !important;
+  border-radius: 4px !important;
+  -webkit-box-decoration-break: clone !important;
+  box-decoration-break: clone !important;
+}
+.latex-copy-connector {
+  all: initial;
+  position: fixed !important;
+  inset: auto !important;
+  width: 1px !important;
+  height: 1px !important;
+  z-index: 2147483645 !important;
+  pointer-events: none !important;
+  overflow: visible !important;
+}
+.latex-copy-connector[hidden] { display: none !important; }
+.latex-copy-connector line {
+  stroke: rgba(100, 116, 139, 0.35) !important;
+  stroke-width: 1;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none !important;
+}
+.latex-copy-connector circle {
+  fill: rgba(100, 116, 139, 0.8) !important;
+  stroke: #ffffff !important;
+  stroke-width: 1;
+  pointer-events: none !important;
+}
+.latex-copy-connector[data-theme="dark"] line {
+  stroke: rgba(228, 228, 231, 0.32) !important;
+}
+.latex-copy-connector[data-theme="dark"] circle {
+  fill: rgba(244, 244, 245, 0.85) !important;
+  stroke: #18181b !important;
+  stroke-width: 1;
+}
