@@ -1963,8 +1963,9 @@
     editFormula(hit);
   }, true);
 
-  // Selection without formulas returns to native copy. Computed styles stay in
-  // serialize(); this walk only checks for a formula or an open shadow root.
+  // Selection without formulas returns to native copy. A selection that
+  // contains formulas is written as Markdown: headings, emphasis, code, links,
+  // lists and quotes stay, and formulas become $...$ or $$...$$.
   function rangeIntersects(range, node) {
     if (range.intersectsNode(node)) return true;
     let current = node;
@@ -2032,7 +2033,117 @@
       text += value;
     }
 
-    function visit(node, whiteSpace = "normal") {
+    function capture(produce) {
+      const saved = text;
+      text = "";
+      produce();
+      const captured = text;
+      text = saved;
+      return captured;
+    }
+
+    function className(node) {
+      return typeof node.className === "string" ? node.className : [...(node.classList || [])].join(" ");
+    }
+
+    function destination(href) {
+      return /[\s)]/.test(href) ? `<${href.replaceAll(">", "%3E")}>` : href;
+    }
+
+    function tickWrap(value) {
+      if (!value) return "";
+      let size = 1;
+      while (value.includes("`".repeat(size))) size++;
+      const ticks = "`".repeat(size);
+      const pad = /^`|`$|^ | $/.test(value) ? " " : "";
+      return ticks + pad + value + pad + ticks;
+    }
+
+    function wrapMark(mark, chunk) {
+      const match = chunk.match(/^(\s*)([\s\S]*?)(\s*)$/);
+      if (!match?.[2]) return chunk;
+      return match[1] + mark + match[2] + mark + match[3];
+    }
+
+    function inlineMark(node) {
+      const name = node.localName;
+      if (name === "strong" || name === "b") return "**";
+      if (name === "em" || name === "i") return "*";
+      if (name === "del" || name === "s" || name === "strike") return "~~";
+      if (name !== "span") return "";
+      const tokens = new Set(className(node).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+      if (tokens.has("bold") || tokens.has("strong")) return "**";
+      if (tokens.has("italic")) return "*";
+      if (tokens.has("strikethrough") || tokens.has("strike") || tokens.has("linethrough")) return "~~";
+      return "";
+    }
+
+    function codeLanguage(node) {
+      const bits = [className(node)];
+      for (const child of node.children || []) if (child.localName === "code") bits.push(className(child));
+      const match = bits.join(" ").match(/(?:^|\s)(?:language|lang)-(\S+)/);
+      return match ? match[1] : "";
+    }
+
+    function listDepth(node) {
+      let depth = 0;
+      for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+        if (parent.localName === "ul" || parent.localName === "ol") depth++;
+      }
+      return Math.max(0, depth - 1);
+    }
+
+    function listMarker(node) {
+      const list = node.parentElement;
+      let marker = "- ";
+      if (list?.localName !== "ol" && list?.localName !== "ul") return marker;
+      if (list.localName === "ol") {
+        const start = Number.parseInt(list.getAttribute("start") ?? "1", 10);
+        let index = 0;
+        for (let previous = node.previousElementSibling; previous; previous = previous.previousElementSibling) {
+          if (previous.localName === "li") index++;
+        }
+        const value = Number.parseInt(node.getAttribute("value") ?? "", 10);
+        marker = `${Number.isFinite(value) ? value : (Number.isFinite(start) ? start : 1) + index}. `;
+      }
+      const box = node.firstElementChild ?? node.children?.[0];
+      if (box?.localName === "input" && (box.getAttribute("type") || box.type) === "checkbox") {
+        marker += box.checked ? "[x] " : "[ ] ";
+      }
+      return marker;
+    }
+
+    function markdownTable(node) {
+      const rows = [];
+      const walk = parent => {
+        for (const child of parent.children || []) {
+          if (child.localName === "tr") rows.push(child);
+          else if (/^(thead|tbody|tfoot)$/.test(child.localName)) walk(child);
+        }
+      };
+      walk(node);
+      const rendered = rows.map(row => [...(row.children || [])]
+        .filter(cell => cell.localName === "td" || cell.localName === "th")
+        .map(cell => capture(() => walkChildren(cell, "normal", false)).replace(/\|/g, "\\|").replace(/\s+/g, " ").trim()));
+      if (!rendered.length) return "";
+      const width = Math.max(...rendered.map(row => row.length));
+      const pad = row => {
+        const cells = row.slice();
+        while (cells.length < width) cells.push("");
+        return `| ${cells.join(" | ")} |`;
+      };
+      return [pad(rendered[0]), `| ${Array(width).fill("---").join(" | ")} |`, ...rendered.slice(1).map(pad)]
+        .filter(Boolean).join("\n");
+    }
+
+    function walkChildren(node, whiteSpace, literal) {
+      for (const child of node.childNodes) visit(child, whiteSpace, literal);
+      if (node.shadowRoot && rangeIntersects(range, node)) {
+        for (const child of node.shadowRoot.childNodes) visit(child, whiteSpace, literal);
+      }
+    }
+
+    function visit(node, whiteSpace = "normal", literal = false) {
       if (!rangeIntersects(range, node)) return;
       if (node.nodeType === Node.TEXT_NODE) {
         const from = node === range.startContainer ? range.startOffset : 0;
@@ -2066,31 +2177,85 @@
         text += "\n";
         return;
       }
-      const block = /^(block|flow-root|list-item|flex|grid|table|table-row|table-caption)$/.test(style.display);
-      const spacing = /^(p|h[1-6]|blockquote|pre)$/.test(node.localName) ? 2 : 1;
-      if (block) line(spacing);
-      if (node.localName === "li") {
-        const list = node.parentElement;
-        if (list?.localName === "ol" || list?.localName === "ul") {
-          let marker = "- ";
-          if (list.localName === "ol") {
-            const start = Number.parseInt(list.getAttribute("start") ?? "1", 10);
-            let index = 0;
-            for (let previous = node.previousElementSibling; previous; previous = previous.previousElementSibling) {
-              if (previous.localName === "li") index++;
-            }
-            const value = Number.parseInt(node.getAttribute("value") ?? "", 10);
-            marker = `${Number.isFinite(value) ? value : (Number.isFinite(start) ? start : 1) + index}. `;
-          }
-          text += marker;
-          const box = node.firstElementChild;
-          if (box?.matches('input[type="checkbox"]')) text += box.checked ? "[x] " : "[ ] ";
+      if (literal) {
+        walkChildren(node, whiteSpace, true);
+        return;
+      }
+
+      const name = node.localName;
+      if (name === "hr") {
+        line(2);
+        text += "---";
+        line(2);
+        return;
+      }
+      if (name === "img") {
+        const src = node.getAttribute("src") || "";
+        if (!src || (src.startsWith("data:") && src.length > 180)) return;
+        text += `![${(node.getAttribute("alt") || "").replace(/]/g, "\\]")}](${destination(src)})`;
+        return;
+      }
+      if (name === "pre") {
+        const body = capture(() => walkChildren(node, "pre", true)).replace(/^\n+/, "").replace(/\n+$/, "");
+        line(2);
+        text += "```" + codeLanguage(node) + "\n" + body + "\n```";
+        line(2);
+        return;
+      }
+      if (name === "code") {
+        const spacing = /^(pre|pre-wrap|break-spaces)$/.test(style.whiteSpace) ? style.whiteSpace : "normal";
+        text += tickWrap(capture(() => walkChildren(node, spacing, true)).replace(/^\n+/, "").replace(/\n+$/, ""));
+        return;
+      }
+      if (name === "table") {
+        const table = markdownTable(node);
+        if (!table) return;
+        line(2);
+        text += table;
+        line(2);
+        return;
+      }
+      if (name === "blockquote") {
+        const inner = capture(() => walkChildren(node, style.whiteSpace, false)).replace(/^\n+/, "").replace(/\n+$/, "");
+        if (!inner) return;
+        line(2);
+        text += inner.split("\n").map(part => part ? `> ${part}` : ">").join("\n");
+        line(2);
+        return;
+      }
+      if (/^h[1-6]$/.test(name)) {
+        const inner = capture(() => walkChildren(node, style.whiteSpace, false)).replace(/^\s+/, "").replace(/\s+$/, "");
+        if (!inner) return;
+        line(2);
+        text += `${"#".repeat(Number(name[1]))} ${inner}`;
+        line(2);
+        return;
+      }
+      if (name === "a") {
+        const href = node.getAttribute("href");
+        if (href && !/^\s*javascript:/i.test(href)) {
+          const inner = capture(() => walkChildren(node, style.whiteSpace, false)).replace(/\s+/g, " ").trim();
+          text += `[${(inner || href).replace(/\\/g, "\\\\").replace(/]/g, "\\]")}](${destination(href)})`;
+          return;
         }
       }
-      for (const child of node.childNodes) visit(child, style.whiteSpace);
-      if (node.shadowRoot && rangeIntersects(range, node)) {
-        for (const child of node.shadowRoot.childNodes) visit(child, style.whiteSpace);
+      if (name === "li") {
+        const inner = capture(() => walkChildren(node, style.whiteSpace, false)).replace(/^\n+/, "").replace(/\n+$/, "");
+        line(1);
+        text += "  ".repeat(listDepth(node)) + listMarker(node) + inner;
+        line(1);
+        return;
       }
+      const mark = inlineMark(node);
+      if (mark) {
+        text += wrapMark(mark, capture(() => walkChildren(node, style.whiteSpace, false)));
+        return;
+      }
+
+      const block = /^(block|flow-root|list-item|flex|grid|table|table-row|table-caption)$/.test(style.display);
+      const spacing = /^(p|h[1-6]|blockquote|pre)$/.test(name) ? 2 : 1;
+      if (block) line(spacing);
+      walkChildren(node, style.whiteSpace, false);
       if (block) line(spacing);
       if (style.display === "table-cell") text += "\t";
     }
@@ -2131,7 +2296,9 @@
       event.clipboardData.clearData();
       event.clipboardData.setData("text/plain", chunks.join("\n\n"));
       event.preventDefault();
-      // Keep page copy handlers from adding the rendered math a second time.
+      // Page handlers run later on document and would replace this Markdown
+      // with the rendered glyphs.
+      event.stopPropagation();
       event.stopImmediatePropagation();
     } catch {
       // An unsupported page keeps the browser's normal copy behavior.
@@ -2150,6 +2317,6 @@
   // Optional hook for the local Node fixtures. It is inert unless a test page
   // installs the callback before this script runs.
   if (typeof globalThis.__latexCopyTestHook === "function") {
-    globalThis.__latexCopyTestHook({ markdownMath, pageSignature, sourceSignature, normalize, delimit, chooseOwnerSource, katexApi, mathJaxApi, mathJaxNodeSafe, rememberMathJax2, frameworkReset, elementClipsOverflow });
+    globalThis.__latexCopyTestHook({ markdownMath, pageSignature, sourceSignature, normalize, delimit, chooseOwnerSource, katexApi, mathJaxApi, mathJaxNodeSafe, rememberMathJax2, frameworkReset, elementClipsOverflow, serialize });
   }
 })();
