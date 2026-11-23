@@ -241,10 +241,35 @@
     const text = jax.Text;
     const queue = hub?.Queue;
     pinnedMathJax2 = {
-      text: (tex, callback) => text.call(jax, tex, callback),
+      text: (target, tex, callback) => text.call(target, tex, callback),
       queue: typeof queue === "function" ? (...args) => queue.apply(hub, args) : null
     };
     return pinnedMathJax2;
+  }
+
+  function queueMathJax2Text(jax, hub, tex, done) {
+    const pinned = rememberMathJax2(jax, hub);
+    const run = () => (pinned ? pinned.text(jax, tex) : jax.Text(tex));
+    if (pinned?.queue) pinned.queue(run, done);
+    else hub.Queue(run, done);
+  }
+
+  function mathJax2Entry(target, hub = window.MathJax?.Hub) {
+    const frame = mathJax2Frame(target) || target;
+    const fallbackScript = mathJax2Script(target) ||
+      (frame.id && document.getElementById(frame.id.replace(/-Frame$/, ""))) ||
+      (target.nextElementSibling?.matches?.('script[type^="math/tex"]') ? target.nextElementSibling : null);
+    const jax = hub?.getJaxFor?.(frame) || (fallbackScript && hub?.getJaxFor?.(fallbackScript)) || null;
+    const script = jax?.SourceElement?.() || fallbackScript;
+    return { frame, jax, script };
+  }
+
+  function mathJax2ResultNode(script, fallback = null) {
+    const raw = (script?.previousElementSibling?.matches?.(MATH) && script.previousElementSibling) ||
+      (script?.id && document.getElementById(script.id + "-Frame")) ||
+      (fallback?.id && document.getElementById(fallback.id)) ||
+      fallback;
+    return raw ? (mathAncestor(raw) || raw) : null;
   }
 
   function markupOf(node) {
@@ -268,6 +293,7 @@
   }
 
   function holdEdited(node, source, pristine, engine, style) {
+    editHolds.get(node)?.disconnect();
     const pristineHTML = markupOf(pristine);
     const parent = node.parentNode;
     const index = parent ? [...parent.childNodes].indexOf(node) : -1;
@@ -281,6 +307,7 @@
     };
     const holder = { disconnect };
     const follow = replacement => {
+      if (replacement !== current) editHolds.get(replacement)?.disconnect();
       editedSources.delete(current);
       editedSources.set(replacement, source);
       formulaMarkup.set(replacement, pristine);
@@ -1120,30 +1147,23 @@
       }
       const hub = window.MathJax?.Hub;
       if (hub?.Queue) {
-        const frame = target.matches(".MathJax,.MathJax_SVG") ? target : target.querySelector(".MathJax,.MathJax_SVG") || target;
-        let jax = hub.getJaxFor?.(frame);
-        if (!jax && frame.id) {
-          const script = document.getElementById(frame.id.replace(/-Frame$/, "")) || target.nextElementSibling;
-          if (script?.matches?.('script[type^="math/tex"]')) jax = hub.getJaxFor?.(script);
-        }
+        const { jax, script } = mathJax2Entry(target, hub);
         if (jax?.Text) {
-          const script = jax.SourceElement?.() ||
-            (frame.id && document.getElementById(frame.id.replace(/-Frame$/, ""))) ||
-            target.nextElementSibling;
           let errText = "";
-          const pinned = rememberMathJax2(jax, hub);
-          await new Promise(resolve => {
-            (pinned?.queue || hub.Queue).call(pinned?.queue ? undefined : hub, [pinned?.text || jax.Text, jax, source.tex], () => {
-              const prev = script?.previousElementSibling;
-              const err = (prev || target).querySelector?.(".MathJax_Error");
-              if (err) errText = err.textContent || "Invalid formula syntax.";
-              resolve();
+          editWriting++;
+          try {
+            await new Promise(resolve => {
+              queueMathJax2Text(jax, hub, source.tex, () => {
+                const prev = script?.previousElementSibling;
+                const err = (prev || target).querySelector?.(".MathJax_Error");
+                if (err) errText = err.textContent || "Invalid formula syntax.";
+                resolve();
+              });
             });
-          });
-          const newTarget = (script?.previousElementSibling?.matches?.(MATH) && script.previousElementSibling) ||
-            (script?.id && document.getElementById(script.id + "-Frame")) ||
-            (target.id && document.getElementById(target.id)) ||
-            target;
+          } finally {
+            editWriting--;
+          }
+          const newTarget = mathJax2ResultNode(script, target);
           if (errText) {
             const err = new Error(errText);
             err.nextTarget = newTarget;
@@ -1724,12 +1744,16 @@
         tether?.reanchor(nextTarget);
         original = nextTarget;
       };
+      const previousTarget = original;
       try {
         const nextTarget = await renderEdited(original, source, engine, style);
         if (token !== paintToken) return false;
         adoptTarget(nextTarget);
+        if (previousTarget !== original) editedSources.delete(previousTarget);
         editedSources.set(original, source);
         hold?.disconnect();
+        if (previousTarget !== original) editHolds.get(previousTarget)?.disconnect();
+        editHolds.get(original)?.disconnect();
         hold = holdEdited(original, source, pristine, engine, style);
         if (isLive && shadow.activeElement !== input) input.focus({ preventScroll: true });
         error.hidden = true;
@@ -1815,21 +1839,25 @@
       paintToken++;
       hold?.disconnect();
       hold = null;
-      editedSources.delete(original);
-      restoreFormula(original, pristine);
+      editHolds.get(original)?.disconnect();
       const hub = window.MathJax?.Hub;
-      if (hub?.Queue && engine.startsWith("mathjax-")) {
-        const frame = original.matches(".MathJax,.MathJax_SVG") ? original : original.querySelector(".MathJax,.MathJax_SVG") || original;
-        const scriptId = frame.id?.replace(/-Frame$/, "");
-        const script = (scriptId && document.getElementById(scriptId)) || original.nextElementSibling;
-        const jax = hub.getJaxFor?.(frame) || (script?.matches?.('script[type^="math/tex"]') && hub.getJaxFor?.(script));
-        if (jax?.Text) {
-          hub.Queue(["Text", jax, pristineSource.tex], () => {
-            const restoredNode = (script?.previousElementSibling?.matches?.(MATH) && script.previousElementSibling) ||
-              (script?.id && document.getElementById(script.id + "-Frame"));
-            if (restoredNode) editedSources.delete(restoredNode);
-          });
-        }
+      const { jax, script } = hub?.Queue && engine.startsWith("mathjax-") ? mathJax2Entry(original, hub) : { jax: null, script: null };
+      editedSources.delete(original);
+      editWriting++;
+      try {
+        restoreFormula(original, pristine);
+      } finally {
+        editWriting--;
+      }
+      if (hub?.Queue && jax?.Text) {
+        queueMathJax2Text(jax, hub, pristineSource.tex, () => {
+          const restoredNode = mathJax2ResultNode(script);
+          if (restoredNode) {
+            editedSources.delete(restoredNode);
+            editHolds.get(restoredNode)?.disconnect();
+            restoredNode.classList.remove("latex-copy-editing");
+          }
+        });
       }
       finish();
     };
@@ -2317,6 +2345,6 @@
   // Optional hook for the local Node fixtures. It is inert unless a test page
   // installs the callback before this script runs.
   if (typeof globalThis.__latexCopyTestHook === "function") {
-    globalThis.__latexCopyTestHook({ markdownMath, pageSignature, sourceSignature, normalize, delimit, chooseOwnerSource, katexApi, mathJaxApi, mathJaxNodeSafe, rememberMathJax2, frameworkReset, elementClipsOverflow, serialize });
+    globalThis.__latexCopyTestHook({ markdownMath, pageSignature, sourceSignature, normalize, delimit, chooseOwnerSource, katexApi, mathJaxApi, mathJaxNodeSafe, rememberMathJax2, queueMathJax2Text, renderEdited, holdEdited, editHolds, frameworkReset, elementClipsOverflow, serialize });
   }
 })();
