@@ -1,6 +1,6 @@
 {
   "name": "latex-copy",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Browser extension that copies rendered formulas as LaTeX and re-renders them in place.",
   "private": true,
   "license": "MIT",
